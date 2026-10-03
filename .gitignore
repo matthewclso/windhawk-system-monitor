@@ -1,0 +1,7 @@
+/.venv/
+/outputs/
+__pycache__/
+*.pyc
+/config.json
+/panel.json
+/agent-status.json
