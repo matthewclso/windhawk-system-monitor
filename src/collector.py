@@ -9,11 +9,47 @@ from __future__ import annotations
 import argparse, base64, ctypes, ctypes.wintypes as wt, hashlib, json, math, os
 from pathlib import Path
 import queue, shutil, subprocess, threading, time, urllib.request, urllib.error
+import traceback
 from datetime import datetime
 
 ROOT = Path(__file__).resolve().parent
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CONFIG = {}
+ERROR_LOCK = threading.Lock()
+LAST_ERRORS = {}
+
+
+def log_failure(operation, error):
+    """Bounded diagnostics: exception class/code/frames, never messages or bodies."""
+    try:
+        with ERROR_LOCK:
+            key = (operation, type(error).__name__)
+            now = time.time()
+            if now - LAST_ERRORS.get(key, 0) < 30:
+                return
+            LAST_ERRORS[key] = now
+            path = ROOT / "helper-errors.log"
+            if path.exists() and path.stat().st_size >= 65536:
+                os.replace(path, ROOT / "helper-errors.previous.log")
+            record = {
+                "at": now,
+                "operation": operation,
+                "type": type(error).__name__,
+                "errno": getattr(error, "errno", None),
+                "winerror": getattr(error, "winerror", None),
+                "frames": [
+                    {
+                        "file": Path(f.filename).name,
+                        "line": f.lineno,
+                        "function": f.name,
+                    }
+                    for f in traceback.extract_tb(error.__traceback__)
+                ],
+            }
+            with path.open("a", encoding="utf8") as stream:
+                stream.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # Diagnostic file problems must never terminate sampling.
 
 
 def load_config():
@@ -675,7 +711,23 @@ def atomic_json(path, data):
     temp.write_text(
         json.dumps(data, ensure_ascii=False, allow_nan=False), encoding="utf8"
     )
-    os.replace(temp, path)
+    for attempt in range(3):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def publish_snapshots(panel, destinations):
+    """A locked snapshot is skipped this tick; other copies still get published."""
+    for destination in destinations:
+        try:
+            atomic_json(destination, panel)
+        except OSError as error:
+            log_failure("publish " + destination.name, error)
 
 
 def shell_snapshot_paths():
@@ -836,16 +888,11 @@ def run(once=False):
             with lock:
                 a = json.loads(json.dumps(agents))
             panel = render(h, a)
-            atomic_json(ROOT / "panel.json", panel)
             if time.monotonic() >= next_discovery:
                 # A package's AC directory may be created after helper startup.
                 shell_paths = shell_snapshot_paths()
                 next_discovery = time.monotonic() + 60
-            for destination in shell_paths:
-                try:
-                    atomic_json(destination, panel)
-                except OSError:
-                    pass
+            publish_snapshots(panel, [ROOT / "panel.json", *shell_paths])
             if once or kernel.WaitForSingleObject(stop_event, 1000) == 0:
                 break
     finally:
@@ -860,4 +907,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    run(args.once)
+    try:
+        run(args.once)
+    except Exception as error:
+        log_failure("collector exit", error)
+        raise SystemExit(1)  # Windows Task Scheduler restarts failed collectors.

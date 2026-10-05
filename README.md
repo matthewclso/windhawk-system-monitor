@@ -62,7 +62,11 @@ This is an independent fork, not an official OpenAI or Anthropic integration. Ac
 
 5. Open Notification Center. Open your native Codex/Claude apps once so discovery and quota refresh can complete. Allow up to a minute for account readings. For Claude's reset count/expiration, open **Claude Desktop → Settings → Usage** once to populate its cached reset inventory.
 
-The helper installs to `%LOCALAPPDATA%\NotificationCenterMetrics`. `--startup` adds a per-user Windows sign-in startup entry. Omit it if you want manual startup; run the installed `collector.py` with your environment's `pythonw.exe` when needed.
+The helper installs to `%LOCALAPPDATA%\NotificationCenterMetrics`. **Use `--startup` for automatic operation.** It registers a Windows scheduled task for your signed-in user, starts the helper at sign-in, and recovers it after an exit. The task runs independently of Codex, WSL and the installing terminal, uses normal user permissions, and stores no password. Its one-minute trigger starts the helper only when the task is not already running; it does not restart a healthy collector every minute. Battery use does not stop it, and the task has no default three-day execution timeout.
+
+Existing installations migrate from the old one-shot startup entry when you rerun `setup_helper.py --startup`. This helper update does not require recompiling the Windhawk mod. Keep the Python environment and checkout at their installed paths. A missing runtime or moved checkout still requires reinstalling with valid paths.
+
+Omit `--startup` on a fresh installation if you want manual operation; run the installed `collector.py` with your environment's `pythonw.exe` when needed. Updating an existing automatic installation preserves automatic operation.
 
 ## Refresh behavior
 
@@ -103,7 +107,7 @@ Run diagnostics using the **same Python environment** used to install:
 .\.venv\Scripts\python.exe setup_helper.py --doctor
 ```
 
-- **All hardware rows unavailable:** check the helper and DLL diagnostics. Run `python.exe "$env:LOCALAPPDATA\NotificationCenterMetrics\collector.py"` in the foreground to see startup errors. If a helper is already running, the singleton prevents a second one; reinstalling stops and restarts the existing instance.
+- **All hardware rows unavailable:** check automatic recovery, scheduled-task state and snapshot ages with `--doctor`. A stopped collector should recover on the next minute trigger while you are signed in. Rerun `setup_helper.py --startup` if automatic recovery is disabled or the Python environment changed. `helper-errors.log` records bounded, sanitized exception classes/codes/stack locations. Temporarily locked snapshot files are retried/skipped so they cannot end the sampling loop.
 - **Fresh snapshots but unavailable in the calendar:** the helper mirrors `panel.json` into ShellExperienceHost's package-local `AC\NotificationCenterMetrics` directory. This is essential because the shell's AppContainer has a different `LOCALAPPDATA`. Open Notification Center, wait up to a minute for directory discovery, and check the mirrored snapshot's age with `--doctor`.
 - **Agent absent:** confirm the supported Windows app/account is signed in. WSL-only, API-key-only Codex, Codex keyring-only auth, and Claude CLI-only credentials are not supported in this release. A stale or unsupported desktop format may also prevent sign-in detection.
 - **Usage unavailable but row visible:** sign-in was detected, but the provider request or executable discovery failed. Open the app and allow the next refresh. Inspect `%LOCALAPPDATA%\NotificationCenterMetrics\agent-status.json` for sanitized error class names; it contains no token or account ID.
@@ -121,11 +125,11 @@ To remove the helper:
 .\.venv\Scripts\python.exe setup_helper.py --uninstall
 ```
 
-This stops only this helper, restores its previous startup entry when it still owns that entry, and removes its installed files and shell snapshot mirrors. Separately disable/remove the mod in Windhawk, then re-enable your previous styler if desired. Remove the checkout/venv only after uninstalling.
+This disables/removes only this user's owned monitor task, stops the helper, restores the previous startup entry when its name has not been taken over, and removes its installed files and shell snapshot mirrors. Separately disable/remove the mod in Windhawk, then re-enable your previous styler if desired. Remove the checkout/venv only after uninstalling.
 
 ## Development and license
 
-[src/metrics-panel.h](src/metrics-panel.h) contains the panel, [src/collector.py](src/collector.py) the native account collector, [src/hardware.cpp](src/hardware.cpp) the PDH/DXGI helper, and [src/claude-reset-cache.cjs](src/claude-reset-cache.cjs) the cache decoder. The complete Windhawk source is generated from the preserved upstream snapshot and these documented hooks.
+[src/metrics-panel.h](src/metrics-panel.h) contains the panel, [src/collector.py](src/collector.py) the native account collector, [src/hardware.cpp](src/hardware.cpp) the PDH/DXGI helper, and [src/claude-reset-cache.cjs](src/claude-reset-cache.cjs) the cache decoder. [task_scheduler.py](task_scheduler.py) builds the recovery policy; [tools/manage-task.ps1](tools/manage-task.ps1) applies it through the Windows scheduler API. The complete Windhawk source is generated from the preserved upstream snapshot and these documented hooks.
 
 ```powershell
 .\.venv\Scripts\python.exe build.py --assemble-only

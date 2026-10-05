@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import time
+import task_scheduler
 
 ROOT = Path(__file__).resolve().parent
 INSTALL = (
@@ -92,10 +93,14 @@ def install(args):
             config[option] = str(resolved)
     # Capture the previous startup entry once, before our first mutation.
     before = get_startup()
+    scheduled = task_scheduler.manage("status", INSTALL)
+    automatic = args.startup or (scheduled.get("owned") and scheduled.get("enabled"))
     if before and str(INSTALL / "collector.py").lower() in before[0].lower():
         # An earlier version of this same helper is an upgrade, not a separate
         # startup entry to resurrect after deleting its installed files.
         before = None
+    if scheduled.get("exists"):
+        task_scheduler.manage("disable", INSTALL)
     stop_helper()
     INSTALL.mkdir(parents=True, exist_ok=True)
     record = INSTALL / "installation.json"
@@ -108,27 +113,40 @@ def install(args):
     for name in ("hardware.dll", "libunwind.whl"):
         shutil.copyfile(ROOT / "outputs" / name, INSTALL / name)
     config_path.write_text(json.dumps(config, indent=2), encoding="utf8")
-    command = subprocess.list2cmdline([str(pythonw), str(INSTALL / "collector.py")])
-    if args.startup:
+    if automatic:
+        xml = task_scheduler.task_xml(
+            pythonw, INSTALL / "collector.py", scheduled["sid"]
+        )
+        task_scheduler.manage("register", INSTALL, xml)
+        # Remove only our legacy Run entry; the scheduled task now owns startup.
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            winreg.SetValueEx(key, RUN_NAME, 0, winreg.REG_SZ, command)
-    subprocess.Popen(
-        [str(pythonw), str(INSTALL / "collector.py")],
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+            current = get_startup()
+            if current and str(INSTALL / "collector.py").lower() in current[0].lower():
+                winreg.DeleteValue(key, RUN_NAME)
+        task_scheduler.manage("start", INSTALL)
+    else:
+        subprocess.Popen(
+            [str(pythonw), str(INSTALL / "collector.py")],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
     print("Helper installed and started:", INSTALL)
     print("Keep this Python environment:", pythonw.parent)
     print(
-        "Startup enabled"
-        if args.startup
-        else "Startup setting preserved; use --startup to enable it"
+        "Automatic startup/recovery enabled through Windows Task Scheduler"
+        if automatic
+        else "Manual mode; use --startup for automatic recovery"
     )
 
 
 def uninstall():
     import winreg
 
+    scheduled = task_scheduler.manage("status", INSTALL)
+    if scheduled.get("exists"):
+        task_scheduler.manage("disable", INSTALL)
     stop_helper()
+    if scheduled.get("exists"):
+        task_scheduler.manage("remove", INSTALL)
     record = INSTALL / "installation.json"
     previous = (
         json.loads(record.read_text(encoding="utf8")).get("previousStartup")
@@ -137,10 +155,13 @@ def uninstall():
     )
     current = get_startup()
     # Avoid overwriting a startup entry another installation has taken over.
-    if current and str(INSTALL / "collector.py").lower() in current[0].lower():
+    if current is None or str(INSTALL / "collector.py").lower() in current[0].lower():
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             if previous is None:
-                winreg.DeleteValue(key, RUN_NAME)
+                try:
+                    winreg.DeleteValue(key, RUN_NAME)
+                except FileNotFoundError:
+                    pass
             else:
                 winreg.SetValueEx(key, RUN_NAME, 0, previous[1], previous[0])
     packages = INSTALL.parent / "Packages"
@@ -158,7 +179,29 @@ def doctor():
     validate_runtime()
     print("Python:", sys.executable)
     print("Helper:", "installed" if (INSTALL / "collector.py").exists() else "missing")
-    print("Startup:", "configured" if get_startup() else "absent")
+    scheduled = task_scheduler.manage("status", INSTALL)
+    print(
+        "Automatic recovery:",
+        (
+            "enabled"
+            if scheduled.get("owned") and scheduled.get("enabled")
+            else "disabled"
+        ),
+    )
+    if scheduled.get("exists"):
+        state = {
+            0: "unknown",
+            1: "disabled",
+            2: "queued",
+            3: "ready",
+            4: "running",
+        }.get(scheduled["state"], "unknown")
+        print("Scheduled task:", scheduled["name"], "state", state)
+        # An IgnoreNew trigger can leave a 'request refused' last-result code
+        # even while the existing task is healthy; do not label it as a failure.
+        if scheduled["state"] != 4:
+            print("Last task result:", hex(scheduled["lastResult"] & 0xFFFFFFFF))
+    print("Legacy startup entry:", "configured" if get_startup() else "absent")
     if (INSTALL / "hardware.dll").exists():
         ctypes.CDLL(str(INSTALL / "hardware.dll"))
         print("Hardware DLL: loadable")
