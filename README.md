@@ -95,7 +95,7 @@ Supply only the overrides you need. Omitted options retain earlier overrides. To
 | `nodeExecutable` | `node.exe`/`node` on PATH |
 | `codexExecutable` | Running native `codex.exe`, then `codex.exe` on PATH |
 | `codexHome` | Inherited `CODEX_HOME`, otherwise `%USERPROFILE%\.codex` |
-| `claudeProfile` | `%APPDATA%\Claude` or packaged `Claude_*\LocalCache\Roaming\Claude` |
+| `claudeProfile` | Migrated `%LOCALAPPDATA%\Claude-Data\claude*` first, then `%APPDATA%\Claude` or packaged `Claude_*\LocalCache\Roaming\Claude` |
 
 Codex's desktop resource binary can live in a versioned package directory. If a saved override stops working after an app update, remove it and open Codex, or supply its new path. Custom `CODEX_HOME` must refer to the Windows sign-in you want displayed.
 
@@ -113,6 +113,7 @@ Run diagnostics using the **same Python environment** used to install:
 - **Usage unavailable but row visible:** sign-in was detected, but the provider request or executable discovery failed. Open the app and allow the next refresh. Inspect `%LOCALAPPDATA%\NotificationCenterMetrics\agent-status.json` for sanitized error class names; it contains no token or account ID.
 - **Claude reset unavailable:** verify Node's zstd support via `--doctor`, then open Claude Settings → Usage. The desktop cache decoder deliberately treats missing/unsupported data as unavailable.
 - **VRAM differs from Task Manager:** this is dedicated VRAM only, never shared GPU memory. On integrated GPUs, dedicated capacity can be small. The first hardware DXGI adapter is selected; additional GPUs are not aggregated.
+- **GPU and VRAM become unavailable after a graphics change:** the collector reopens and primes its native query after 30 seconds of missing readings. This refreshes adapter identity and counter handles without restarting the helper. Devices with zero dedicated capacity keep VRAM unavailable; shared memory is never substituted.
 - **Disk differs from C: file activity:** active time is measured on its backing physical disk, including activity on that disk's other partitions. For a multi-disk volume, the busiest backing disk is shown.
 
 ## Updating and uninstalling

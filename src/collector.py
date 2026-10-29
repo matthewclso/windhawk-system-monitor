@@ -506,6 +506,20 @@ def unprotect(data):
         k.LocalFree(out.pbData)
 
 
+def claude_profiles():
+    """Prefer migrated Windows desktop profiles, retaining legacy installs/overrides."""
+    override = configured_path("claudeProfile")
+    if override:
+        return [override]
+    local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+    roaming = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
+    return (
+        sorted((local / "Claude-Data").glob("claude*"))
+        + [roaming / "Claude"]
+        + list((local / "Packages").glob("Claude_*/LocalCache/Roaming/Claude"))
+    )
+
+
 def claude_credential():
     """Decrypt only the active Windows desktop account using the current user's DPAPI.
 
@@ -516,15 +530,7 @@ def claude_credential():
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.exceptions import InvalidTag
 
-    profiles = [Path.home() / "AppData/Roaming/Claude"]
-    profiles += list(
-        (Path.home() / "AppData/Local/Packages").glob(
-            "Claude_*/LocalCache/Roaming/Claude"
-        )
-    )
-    if configured_path("claudeProfile"):
-        profiles = [configured_path("claudeProfile")]
-    for profile in profiles:
+    for profile in claude_profiles():
         try:
             config = json.loads((profile / "config.json").read_text(encoding="utf8"))
             active = config.get("lastKnownAccountUuid")
@@ -730,6 +736,25 @@ def publish_snapshots(panel, destinations):
             log_failure("publish " + destination.name, error)
 
 
+def recover_gpu_query(hardware, sample, last_healthy):
+    """Rebuild stale PDH/DXGI state after 30s of missing GPU readings.
+
+    Adapter LUIDs can change after a driver update/reset. The query can still
+    produce valid CPU/disk values while matching no GPU instances. Reopen and
+    prime a separate sample, preserving this tick's other readings; the next
+    one-second tick supplies the second PDH sample. Throttle retries on machines
+    whose GPU counters or dedicated VRAM are genuinely unsupported.
+    """
+    now = time.monotonic()
+    if sample.gpu >= 0 and (sample.vram >= 0 or sample.dedicatedTotal == 0):
+        return now
+    if now - last_healthy >= 30:
+        hardware.NcmClose()
+        hardware.NcmSample(ctypes.byref(HardwareSample()))
+        return now
+    return last_healthy
+
+
 def shell_snapshot_paths():
     # ShellExperienceHost is an AppContainer and receives a package-local
     # LOCALAPPDATA. Its own AC folder already grants its package access; use
@@ -784,6 +809,7 @@ def run(once=False):
     agents = {}
     shell_paths = shell_snapshot_paths()
     next_discovery = 0
+    last_gpu_healthy = time.monotonic()
 
     def accounts():
         identities = {}
@@ -885,6 +911,7 @@ def run(once=False):
         while True:
             hardware.NcmSample(ctypes.byref(sample))
             h = {name: getattr(sample, name) for name, _ in sample._fields_}
+            last_gpu_healthy = recover_gpu_query(hardware, sample, last_gpu_healthy)
             with lock:
                 a = json.loads(json.dumps(agents))
             panel = render(h, a)

@@ -22,6 +22,8 @@ The helper atomically replaces UTF-8 snapshots through a temporary file. The DLL
 
 `HardwareSample` must match Python's `ctypes.Structure` in member order/alignment. It contains six doubles, one unsigned 32-bit logical-processor count and two unsigned 64-bit byte counts. Negative doubles mean unknown. The first PDH sample primes deltas; the helper waits a second before publishing. Sampling is serial; `NcmClose` releases the query.
 
+The collector reopens the native query after 30 seconds of missing GPU data. A stale query can still produce valid CPU/disk readings while its saved GPU adapter identity matches no current instances. [Adapter LUIDs can change after driver upgrades or device disable/enable](https://learn.microsoft.com/en-us/windows/win32/api/dxcore_interface/ne-dxcore_interface-dxcoreadapterproperty). Recovery closes/reopens PDH and DXGI state and primes a separate sample; current CPU/RAM/disk readings are retained, and the next one-second tick supplies the second sample. Retries are throttled to 30 seconds on unsupported devices. A working GPU with zero dedicated capacity does not trigger repeated retries solely because VRAM is unavailable.
+
 ## Account sources
 
 ### Codex
@@ -32,7 +34,7 @@ Quota data prefers `rateLimitsByLimitId.codex`. A populated map without that buc
 
 ### Claude
 
-This release uses **Claude Desktop's Windows sign-in**, not WSL or CLI-only `.claude` credentials. It locates unpackaged/packaged profile stores, requires `lastKnownAccountUuid`, and reads only matching active-account entries from the encrypted v2 OAuth cache. Windows DPAPI unwraps the Local State AES key, then AES-GCM decrypts Chromium v10 records. The selected token must have the profile scope; Claude Code session scope is preferred. Identifiers/tokens remain in process memory. Unsupported encryption/profile versions are unavailable rather than guessed.
+This release uses **Claude Desktop's Windows sign-in**, not WSL or CLI-only `.claude` credentials. Discovery prefers migrated `%LOCALAPPDATA%\Claude-Data\claude*` profiles (observed with Windows Claude 4.29), then retains the unpackaged `%APPDATA%\Claude` and packaged `Claude_*\LocalCache\Roaming\Claude` locations. An explicit `claudeProfile` override remains exclusive. The detector requires `lastKnownAccountUuid` and reads only matching active-account entries from the encrypted v2 OAuth cache. Windows DPAPI unwraps the Local State AES key, then AES-GCM decrypts Chromium v10 records. The selected token must have the profile scope; Claude Code session scope is preferred. Identifiers/tokens remain in process memory. Unsupported encryption/profile versions are unavailable rather than guessed.
 
 The usage request is `GET https://api.anthropic.com/api/oauth/usage` with the existing OAuth token. Modern `limits[]` identifies Session, Weekly and a distinct five-hour window when supplied. Legacy `five_hour` is labeled Session and is not duplicated when modern limits exist. Model-specific weekly windows are not presented as the overall weekly quota.
 
